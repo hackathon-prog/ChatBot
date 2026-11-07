@@ -1,5 +1,6 @@
 """Read-only database access for analytics queries."""
 
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import create_engine, inspect, text
@@ -14,6 +15,9 @@ def _make_engine(url: str) -> Engine:
         import sqlite3
 
         path = url.removeprefix("sqlite:///")
+        if not Path(path).is_absolute():
+            # Serverless working directories differ: resolve relative to the project root.
+            path = str(Path(__file__).resolve().parent.parent / path)
         return create_engine(
             "sqlite://",
             creator=lambda: sqlite3.connect(f"file:{path}?mode=ro", uri=True),

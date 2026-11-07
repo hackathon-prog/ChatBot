@@ -129,3 +129,9 @@ def test_agent_falls_back_to_next_model(db):
     agent = AnalyticsAgent(client=client, db=db, model=["bad", "good"])
     assert agent.chat([{"role": "user", "content": "hi"}]) == "ok"
     assert client.models == ["bad", "good"]
+
+
+def test_sqlite_relative_path_is_resolved_from_project_root(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)  # a different working directory, as on serverless hosts
+    d = AnalyticsDb("sqlite:///lms.db", blocked_columns=frozenset(), max_rows=5)
+    assert "students" in d.describe_schema()
