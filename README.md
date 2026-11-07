@@ -1,6 +1,6 @@
 # LMS Analytics Chatbot
 
-FastAPI + Claude tool use. Answers analytics questions only, via validated read-only SQL.
+FastAPI + OpenRouter (tool calling). Answers analytics questions only, via validated read-only SQL.
 Used by the JDK Learning System admin page (Analytics). Administrators only.
 
 ## API (backend only, no web page)
@@ -27,7 +27,7 @@ Set `CORS_ORIGINS` to the origins of your frontend.
 ```
 python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
-copy .env.example .env             # set ANTHROPIC_API_KEY, keep REQUIRE_AUTH=false
+copy .env.example .env             # set OPENROUTER_API_KEY, keep REQUIRE_AUTH=false
 .venv\Scripts\python -m app.seed   # sample SQLite data
 .venv\Scripts\python run.py        # http://127.0.0.1:8000
 .venv\Scripts\python -m pytest
@@ -75,6 +75,6 @@ There is also a per-user limit (`REQUESTS_PER_MINUTE`, default 12) to keep model
 ## Limits
 
 - Results come from small samples: a module quiz has 3 questions per competency.
-- Not tested against a live Supabase database or the live Anthropic API from here: the tests use a scripted
+- Not tested against a live Supabase database or the live OpenRouter API from here: the tests use a scripted
   model, a mocked Supabase, SQLite, and an in-memory Postgres for the SQL views.
 - The service needs hosting that runs Python (not Vercel static hosting).

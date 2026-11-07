@@ -67,7 +67,7 @@ def create_app(
             status = getattr(exc, "status_code", None)
             if status in (401, 403):
                 detail = "The AI service key is invalid. Ask the administrator to check it."
-            elif status == 429 or "credit balance" in str(exc).lower():
+            elif status in (402, 429) or "credit" in str(exc).lower():
                 detail = "The AI service is out of quota or credits. Ask the administrator to check billing."
             else:
                 detail = "The analytics assistant hit an error. Try again shortly."
@@ -81,7 +81,7 @@ def create_app(
 
 
 def build_default_app() -> FastAPI:
-    import anthropic
+    from openai import OpenAI
 
     from app.auth import SupabaseAdminVerifier
     from app.config import Settings
@@ -89,6 +89,7 @@ def build_default_app() -> FastAPI:
 
     s = Settings()
     db = AnalyticsDb(s.database_url, s.blocked_set, s.max_rows, schema=s.db_schema or None)
-    agent = AnalyticsAgent(anthropic.Anthropic(api_key=s.anthropic_api_key), db, s.anthropic_model)
+    client = OpenAI(api_key=s.openrouter_api_key, base_url=s.openrouter_base_url, timeout=45.0)
+    agent = AnalyticsAgent(client, db, s.model_list)
     verifier = SupabaseAdminVerifier(s.supabase_url, s.supabase_anon_key) if s.require_auth else None
     return create_app(agent, verifier, s.origins, s.requests_per_minute)

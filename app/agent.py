@@ -1,4 +1,4 @@
-"""Claude tool-use loop restricted to LMS analytics."""
+"""LLM tool-calling loop (OpenRouter, OpenAI-compatible API) restricted to LMS analytics."""
 
 import json
 from typing import Any
@@ -36,56 +36,82 @@ Database schema (SQL dialect: use standard SQL compatible with the engine below)
 """
 
 TOOL = {
-    "name": "run_sql_query",
-    "description": "Run one read-only SELECT query against the LMS analytics database. "
-    "Results are capped in size.",
-    "input_schema": {
-        "type": "object",
-        "properties": {"sql": {"type": "string", "description": "A single SELECT statement."}},
-        "required": ["sql"],
+    "type": "function",
+    "function": {
+        "name": "run_sql_query",
+        "description": "Run one read-only SELECT query against the LMS analytics database. "
+        "Results are capped in size.",
+        "parameters": {
+            "type": "object",
+            "properties": {"sql": {"type": "string", "description": "A single SELECT statement."}},
+            "required": ["sql"],
+        },
     },
 }
 
 
 class AnalyticsAgent:
-    def __init__(self, client: Any, db: AnalyticsDb, model: str) -> None:
+    def __init__(self, client: Any, db: AnalyticsDb, model: str | list[str]) -> None:
         self._client = client
         self._db = db
-        self._model = model
+        # Several models are tried in order: free models are often rate limited or lack tool support.
+        self._models = [model] if isinstance(model, str) else list(model)
         self._system = SYSTEM_PROMPT.format(schema=db.describe_schema())
 
     def chat(self, history: list[dict[str, str]]) -> str:
-        messages: list[dict[str, Any]] = [dict(m) for m in history]
+        messages: list[dict[str, Any]] = [{"role": "system", "content": self._system}]
+        messages += [dict(m) for m in history]
         for _ in range(MAX_TOOL_ROUNDS):
-            resp = self._client.messages.create(
-                model=self._model,
-                max_tokens=1500,
-                system=self._system,
-                tools=[TOOL],
-                messages=messages,
-            )
-            if resp.stop_reason != "tool_use":
-                return "".join(b.text for b in resp.content if b.type == "text").strip()
+            resp = self._complete(messages)
+            msg = resp.choices[0].message
+            calls = msg.tool_calls or []
+            if not calls:
+                return (msg.content or "").strip()
 
-            messages.append({"role": "assistant", "content": resp.content})
-            results = [self._run_tool(b) for b in resp.content if b.type == "tool_use"]
-            messages.append({"role": "user", "content": results})
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": msg.content,
+                    "tool_calls": [
+                        {
+                            "id": c.id,
+                            "type": "function",
+                            "function": {"name": c.function.name, "arguments": c.function.arguments},
+                        }
+                        for c in calls
+                    ],
+                }
+            )
+            for c in calls:
+                messages.append({"role": "tool", "tool_call_id": c.id, "content": self._run_tool(c)})
         return "I could not finish this analysis within the allowed number of steps."
 
-    def _run_tool(self, block: Any) -> dict[str, Any]:
+    def _complete(self, messages: list[dict[str, Any]]) -> Any:
+        last: Exception | None = None
+        for model in self._models:
+            try:
+                resp = self._client.chat.completions.create(
+                    model=model, max_tokens=1500, tools=[TOOL], messages=messages
+                )
+                if resp.choices:
+                    return resp
+                last = RuntimeError(f"{model} returned no choices")
+            except Exception as exc:
+                last = exc
+        raise last if last else RuntimeError("No model configured")
+
+    def _run_tool(self, call: Any) -> str:
+        if call.function.name != "run_sql_query":
+            return "Error: unknown tool."
         try:
-            data = self._db.run_select(str(block.input.get("sql", "")))
-            return {
-                "type": "tool_result",
-                "tool_use_id": block.id,
-                "content": json.dumps(data, default=str),
-            }
+            args = json.loads(call.function.arguments or "{}")
+            sql = str(args.get("sql", ""))
+        except (ValueError, AttributeError):
+            return "Error: tool arguments must be JSON with a sql field."
+        try:
+            return json.dumps(self._db.run_select(sql), default=str)
         except SqlGuardError as exc:
-            return self._error(block.id, str(exc))
+            return f"Error: {exc}"
         except Exception:
             # Do not leak driver internals to the model or user.
-            return self._error(block.id, "Query failed to execute. Check table and column names.")
-
-    @staticmethod
-    def _error(tool_use_id: str, message: str) -> dict[str, Any]:
-        return {"type": "tool_result", "tool_use_id": tool_use_id, "content": message, "is_error": True}
+            return "Error: query failed to execute. Check table and column names."

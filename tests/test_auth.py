@@ -127,7 +127,7 @@ def test_cors_allows_only_listed_origin(agent):
 
 
 def test_settings_require_supabase_when_auth_on(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
     monkeypatch.delenv("SUPABASE_URL", raising=False)
     with pytest.raises(Exception):
         Settings(_env_file=None)

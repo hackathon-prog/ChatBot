@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -9,27 +10,28 @@ from app.main import create_app
 from app.seed import seed_database
 
 
-def _text(t):
-    return SimpleNamespace(type="text", text=t)
+def _reply(content=None, tool_calls=None):
+    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=tool_calls))])
 
 
 def _tool(sql):
-    return SimpleNamespace(type="tool_use", id="tu_1", name="run_sql_query", input={"sql": sql})
+    fn = SimpleNamespace(name="run_sql_query", arguments=json.dumps({"sql": sql}))
+    return SimpleNamespace(id="tc_1", function=fn)
 
 
 class FakeClient:
-    """Scripted Anthropic client: first call asks for a query, second answers."""
+    """Scripted OpenAI-style client: first call asks for a query, second answers."""
 
     def __init__(self, sql):
         self.sql = sql
         self.calls = []
-        self.messages = self
+        self.chat = SimpleNamespace(completions=self)
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
         if len(self.calls) == 1:
-            return SimpleNamespace(stop_reason="tool_use", content=[_tool(self.sql)])
-        return SimpleNamespace(stop_reason="end_turn", content=[_text("done")])
+            return _reply(tool_calls=[_tool(self.sql)])
+        return _reply(content="done")
 
 
 @pytest.fixture()
@@ -64,17 +66,17 @@ def test_agent_runs_tool_then_answers(db):
     agent = AnalyticsAgent(client=client, db=db, model="m")
     reply = agent.chat([{"role": "user", "content": "how many students?"}])
     assert reply == "done"
-    tool_result = client.calls[1]["messages"][-1]["content"][0]
-    assert tool_result["type"] == "tool_result"
-    assert "20" in tool_result["content"]
+    tool_msg = client.calls[1]["messages"][-1]
+    assert tool_msg["role"] == "tool"
+    assert tool_msg["tool_call_id"] == "tc_1"
+    assert "20" in tool_msg["content"]
 
 
 def test_agent_returns_guard_error_to_model(db):
     client = FakeClient("DROP TABLE students")
     agent = AnalyticsAgent(client=client, db=db, model="m")
     agent.chat([{"role": "user", "content": "drop it"}])
-    tool_result = client.calls[1]["messages"][-1]["content"][0]
-    assert tool_result["is_error"] is True
+    assert client.calls[1]["messages"][-1]["content"].startswith("Error:")
 
 
 def test_chat_endpoint(db):
@@ -94,10 +96,10 @@ def test_chat_endpoint_validates_input(db):
 
 class BrokenClient:
     def __init__(self):
-        self.messages = self
+        self.chat = SimpleNamespace(completions=self)
 
     def create(self, **kwargs):
-        raise RuntimeError("Your credit balance is too low")
+        raise RuntimeError("Insufficient credits")
 
 
 def test_chat_endpoint_hides_provider_errors(db):
@@ -105,4 +107,25 @@ def test_chat_endpoint_hides_provider_errors(db):
     r = TestClient(app).post("/api/chat", json={"messages": [{"role": "user", "content": "hi"}]})
     assert r.status_code == 502
     assert "credits" in r.json()["detail"]
-    assert "credit balance is too low" not in r.text
+    assert "Insufficient credits" not in r.text
+
+
+class FlakyClient:
+    """First model fails, second works."""
+
+    def __init__(self):
+        self.models = []
+        self.chat = SimpleNamespace(completions=self)
+
+    def create(self, **kwargs):
+        self.models.append(kwargs["model"])
+        if kwargs["model"] == "bad":
+            raise RuntimeError("rate limited")
+        return _reply(content="ok")
+
+
+def test_agent_falls_back_to_next_model(db):
+    client = FlakyClient()
+    agent = AnalyticsAgent(client=client, db=db, model=["bad", "good"])
+    assert agent.chat([{"role": "user", "content": "hi"}]) == "ok"
+    assert client.models == ["bad", "good"]
