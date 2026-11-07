@@ -24,14 +24,16 @@ def _problem(exc: Exception) -> str:
     return f"Startup failed ({type(exc).__name__}). Check DATABASE_URL and the Vercel logs."
 
 
+# Vercel finds the entrypoint by scanning for a top-level `app = FastAPI(...)`, so it is declared here.
+app = FastAPI(title="LMS Analytics Chatbot API", docs_url=None, redoc_url=None, openapi_url=None)
+
 try:
     from app.main import build_default_app
 
-    app = build_default_app()
+    app.mount("/", build_default_app())
 except Exception as exc:
     log.exception("startup failed")
     message = _problem(exc)
-    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.api_route("/{path:path}", methods=["GET", "POST", "OPTIONS"])
     def unavailable(path: str) -> None:
