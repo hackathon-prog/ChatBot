@@ -135,3 +135,10 @@ def test_sqlite_relative_path_is_resolved_from_project_root(tmp_path, monkeypatc
     monkeypatch.chdir(tmp_path)  # a different working directory, as on serverless hosts
     d = AnalyticsDb("sqlite:///lms.db", blocked_columns=frozenset(), max_rows=5)
     assert "students" in d.describe_schema()
+
+
+def test_root_describes_api(db):
+    app = create_app(agent=AnalyticsAgent(client=FakeClient("SELECT 1"), db=db, model="m"))
+    r = TestClient(app).get("/")
+    assert r.status_code == 200
+    assert "POST /api/chat" in r.json()["endpoints"]

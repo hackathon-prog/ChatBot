@@ -73,6 +73,14 @@ def create_app(
                 detail = "The analytics assistant hit an error. Try again shortly."
             raise HTTPException(status_code=502, detail=detail) from None
 
+    @app.get("/")
+    def root() -> dict[str, object]:
+        return {
+            "service": "LMS Analytics Chatbot API",
+            "status": "ok",
+            "endpoints": {"POST /api/chat": "ask an analytics question", "GET /api/health": "liveness check"},
+        }
+
     @app.get("/api/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
