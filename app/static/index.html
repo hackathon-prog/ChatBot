@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LMS Analytics Chat</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1b1f24; --mute:#6b7280; --accent:#2563eb; --user:#e8efff; --line:#e3e6ea; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14171b; --card:#1d2126; --ink:#e8eaed; --mute:#9aa3ad; --accent:#6ea0ff; --user:#24324f; --line:#2c3238; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.5 system-ui, sans-serif; height:100vh; display:flex; flex-direction:column; }
+  header { padding:14px 16px; border-bottom:1px solid var(--line); background:var(--card); font-weight:600; }
+  #log { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:10px; max-width:820px; width:100%; margin:0 auto; }
+  .msg { padding:10px 14px; border-radius:12px; max-width:85%; white-space:pre-wrap; word-wrap:break-word; background:var(--card); border:1px solid var(--line); }
+  .user { align-self:flex-end; background:var(--user); }
+  .bot { align-self:flex-start; }
+  .hint { color:var(--mute); font-size:13px; }
+  form { display:flex; gap:8px; padding:12px 16px; border-top:1px solid var(--line); background:var(--card); max-width:820px; width:100%; margin:0 auto; }
+  input { flex:1; padding:10px 12px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--ink); font:inherit; }
+  button { padding:10px 16px; border:0; border-radius:8px; background:var(--accent); color:#fff; font:inherit; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:wait; }
+  #login { display:none; max-width:360px; margin:40px auto; padding:20px; background:var(--card); border:1px solid var(--line); border-radius:12px; flex-direction:column; gap:10px; }
+  #login.show { display:flex; }
+  #login .err { color:#d33; font-size:13px; min-height:1em; }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; }
+  .chip { background:var(--card); color:var(--accent); border:1px solid var(--line); padding:4px 10px; font-size:13px; }
+</style>
+</head>
+<body>
+<header>LMS Analytics Assistant</header>
+<form id="login">
+  <strong>Administrator sign in</strong>
+  <input id="em" type="email" autocomplete="username" placeholder="Email" required>
+  <input id="pw" type="password" autocomplete="current-password" placeholder="Password" required>
+  <button>Sign in</button>
+  <div class="err" id="loginErr"></div>
+</form>
+<div id="log">
+  <div class="msg bot hint">Ask about enrollments, completion, quiz scores, or engagement.</div>
+  <div class="chips">
+    <button class="chip" type="button">Completion rate by course</button>
+    <button class="chip" type="button">Average quiz score per course</button>
+    <button class="chip" type="button">Enrollments per month</button>
+  </div>
+</div>
+<form id="f">
+  <input id="q" autocomplete="off" placeholder="Ask an analytics question..." maxlength="4000" required>
+  <button id="send">Send</button>
+</form>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.0/dist/umd/supabase.min.js"></script>
+<script>
+let sb = null;
+const loginForm = document.getElementById("login");
+
+async function token() {
+  if (!sb) return null;
+  const { data } = await sb.auth.getSession();   // refreshes an expired token automatically
+  return data.session ? data.session.access_token : null;
+}
+
+function showApp(signedIn) {
+  loginForm.classList.toggle("show", !signedIn);
+  document.getElementById("log").style.display = signedIn ? "flex" : "none";
+  document.getElementById("f").style.display = signedIn ? "flex" : "none";
+}
+
+async function init() {
+  const cfg = await (await fetch("/api/config")).json();
+  if (!cfg.auth_required) return showApp(true);
+  sb = window.supabase.createClient(cfg.supabase_url, cfg.supabase_anon_key);
+  showApp(!!(await token()));
+  loginForm.addEventListener("submit", async e => {
+    e.preventDefault();
+    const { error } = await sb.auth.signInWithPassword({
+      email: document.getElementById("em").value, password: document.getElementById("pw").value });
+    document.getElementById("loginErr").textContent = error ? "Sign in failed." : "";
+    if (!error) showApp(true);
+  });
+}
+init();
+
+const log = document.getElementById("log"), f = document.getElementById("f"),
+      q = document.getElementById("q"), send = document.getElementById("send");
+const history = [];
+
+function add(cls, text) {
+  const d = document.createElement("div");
+  d.className = "msg " + cls;
+  d.textContent = text;           // textContent: no HTML injection from model output
+  log.appendChild(d);
+  log.scrollTop = log.scrollHeight;
+  return d;
+}
+
+async function ask(text) {
+  add("user", text);
+  history.push({ role: "user", content: text });
+  const wait = add("bot hint", "Analyzing...");
+  send.disabled = true;
+  try {
+    const headers = { "Content-Type": "application/json" };
+    const t = await token();
+    if (t) headers.Authorization = "Bearer " + t;
+    const r = await fetch("/api/chat", {
+      method: "POST", headers,
+      body: JSON.stringify({ messages: history.slice(-20) }),
+    });
+    if (r.status === 401) showApp(false);
+    if (!r.ok) {
+      let detail = "";
+      try { detail = (await r.json()).detail; } catch (_) {}
+      throw new Error(detail || "Request failed (" + r.status + ")");
+    }
+    const { reply } = await r.json();
+    wait.className = "msg bot"; wait.textContent = reply;
+    history.push({ role: "assistant", content: reply });
+  } catch (e) {
+    wait.textContent = "Error: " + e.message;
+    history.pop();
+  } finally { send.disabled = false; q.focus(); }
+}
+
+f.addEventListener("submit", e => { e.preventDefault(); const t = q.value.trim(); if (t) { q.value = ""; ask(t); } });
+document.querySelectorAll(".chip").forEach(c => c.addEventListener("click", () => ask(c.textContent)));
+</script>
+</body>
+</html>
