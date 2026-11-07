@@ -1,16 +1,14 @@
-from pathlib import Path
+import logging
 from typing import Literal
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.agent import AnalyticsAgent
 from app.auth import AuthError, RateLimiter, Verifier
 
-STATIC = Path(__file__).parent / "static"
+log = logging.getLogger("chatbot")
 
 
 class ChatMessage(BaseModel):
@@ -31,9 +29,8 @@ def create_app(
     verifier: Verifier | None = None,
     cors_origins: list[str] | None = None,
     requests_per_minute: int = 12,
-    public_config: dict[str, str] | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="LMS Analytics Chatbot")
+    app = FastAPI(title="LMS Analytics Chatbot API", docs_url=None, redoc_url=None, openapi_url=None)
     limiter = RateLimiter(requests_per_minute, 60.0)
 
     if cors_origins:
@@ -62,27 +59,24 @@ def create_app(
             raise HTTPException(status_code=429, detail="Too many questions. Wait a minute and try again.")
         if req.messages[-1].role != "user":
             return ChatResponse(reply="Ask a question to continue.")
-        return ChatResponse(reply=agent.chat([m.model_dump() for m in req.messages]))
+        try:
+            return ChatResponse(reply=agent.chat([m.model_dump() for m in req.messages]))
+        except Exception as exc:
+            # Log the real cause server side; show the user a short safe message.
+            log.exception("chat failed")
+            status = getattr(exc, "status_code", None)
+            if status in (401, 403):
+                detail = "The AI service key is invalid. Ask the administrator to check it."
+            elif status == 429 or "credit balance" in str(exc).lower():
+                detail = "The AI service is out of quota or credits. Ask the administrator to check billing."
+            else:
+                detail = "The analytics assistant hit an error. Try again shortly."
+            raise HTTPException(status_code=502, detail=detail) from None
 
     @app.get("/api/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.get("/api/config")
-    def config() -> dict[str, object]:
-        """Public sign-in settings for the page. Only the Supabase URL and anon key, never a secret."""
-        cfg = public_config or {}
-        return {
-            "auth_required": verifier is not None,
-            "supabase_url": cfg.get("supabase_url", ""),
-            "supabase_anon_key": cfg.get("supabase_anon_key", ""),
-        }
-
-    @app.get("/")
-    def index() -> FileResponse:
-        return FileResponse(STATIC / "index.html")
-
-    app.mount("/static", StaticFiles(directory=STATIC), name="static")
     return app
 
 
@@ -97,5 +91,4 @@ def build_default_app() -> FastAPI:
     db = AnalyticsDb(s.database_url, s.blocked_set, s.max_rows, schema=s.db_schema or None)
     agent = AnalyticsAgent(anthropic.Anthropic(api_key=s.anthropic_api_key), db, s.anthropic_model)
     verifier = SupabaseAdminVerifier(s.supabase_url, s.supabase_anon_key) if s.require_auth else None
-    public = {"supabase_url": s.supabase_url, "supabase_anon_key": s.supabase_anon_key}
-    return create_app(agent, verifier, s.origins, s.requests_per_minute, public)
+    return create_app(agent, verifier, s.origins, s.requests_per_minute)

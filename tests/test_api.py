@@ -90,3 +90,19 @@ def test_chat_endpoint_validates_input(db):
     http = TestClient(app)
     assert http.post("/api/chat", json={"messages": []}).status_code == 422
     assert http.post("/api/chat", json={"messages": [{"role": "system", "content": "x"}]}).status_code == 422
+
+
+class BrokenClient:
+    def __init__(self):
+        self.messages = self
+
+    def create(self, **kwargs):
+        raise RuntimeError("Your credit balance is too low")
+
+
+def test_chat_endpoint_hides_provider_errors(db):
+    app = create_app(agent=AnalyticsAgent(client=BrokenClient(), db=db, model="m"))
+    r = TestClient(app).post("/api/chat", json={"messages": [{"role": "user", "content": "hi"}]})
+    assert r.status_code == 502
+    assert "credits" in r.json()["detail"]
+    assert "credit balance is too low" not in r.text
